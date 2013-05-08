@@ -100,7 +100,11 @@ function Chain(fns) {
 
 	// In newer versions of nodejs:
 	//this.defineProperty(this, 'length', {get : function() { return this.fns[0].params; }});
-	this.__defineGetter__('length', function() { return that.fns[0].params; });
+	this.__defineGetter__('length', function() {
+		if (that.fns[0])
+			return that.fns[0].params;
+		return 0;
+	});
 }
 
 // Class methods for the Chain objects

@@ -39,8 +39,8 @@ function mkenv(env, log) {
 			abort_after : null,
 			$log : log
 		},
-		$throw : cf_throw,
-		$catch : cf_catch
+		$throw : _.bind(cf_throw, env),
+		$catch : _.bind(cf_catch, env)
 	});
 }
 

@@ -183,7 +183,13 @@ _.extend(Chain.prototype, {
 					env._cf.stack = env._cf.stack.concat(params.splice(missing, -missing));
 				}
 
-				v.fn.apply(v.ctx, [env, memo].concat(params));
+				// Catch exceptions inside the application and pass them to env.$throw instead
+				try {
+					v.fn.apply(v.ctx, [env, memo].concat(params));
+				}
+				catch (err) {
+					env.$throw(err);
+				}
 			};
 		}, after);
 

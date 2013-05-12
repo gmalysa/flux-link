@@ -27,7 +27,6 @@ function mkfn(fn, params, ctx) {
 	};
 }
 
-
 /**
  * Creates/extends an object suitable to use as an environment by initializing the stack and some utility
  * methods.
@@ -39,7 +38,7 @@ function mkfn(fn, params, ctx) {
  * so if after only requires two arguments, it will pop off arg 2 and arg 3, leaving arg 1 on the stack. This
  * is useful for passing arguments past function calls or returning multiple values from a function call.
  *
- * @param env Optional base environment to update with a stack
+ * @param env Optional base environment with initial local variables
  * @param log Function to use to log critical errors (like when $throw() is called with no exception handlers)
  * @return environment object to be passed to chain.apply
  */
@@ -48,15 +47,34 @@ function mkenv(env, log) {
 	return _.extend(env, {
 		_cf : {
 			stack : [],
-			call_stack : [],
 			abort_stack : [],
 			abort_after : null,
 			$log : log
 		},
 		$throw : _.bind(cf_throw, env),
 		$catch : _.bind(cf_catch, env),
-		$check : _.bind(cf_check, env)
+		$check : _.bind(cf_check, env),
+		$push : _.bind(cf_push, env),
+		$pop : _.bind(cf_pop, env)
 	});
+}
+
+/**
+ * Pushes a value to the parameter stack. Wraps the 'private' member field _cf, so that user code does
+ * not need to be aware of it
+ * @param value Any, the value to push to the stack
+ */
+function cf_push(value) {
+	this._cf.stack.push(value);
+}
+
+/**
+ * Pops a value from the parameter stack. Again, this is to keep user code from needing to touch our
+ * internal state
+ * @return topmost value from the stack
+ */
+function cf_pop() {
+	return this._cf.stack.pop();
 }
 
 /**
@@ -155,10 +173,8 @@ function Chain(fns) {
 	});
 
 	this.__defineGetter__('name', function() {
-		if (that.name)
-			return that.name;
-		else if (that.fns[0])
-			return that.fns[0].name;
+		if (that._name)
+			return that._name;
 		else
 			return '(anonymous chain)';
 	});
@@ -203,6 +219,15 @@ _.extend(Chain.prototype, {
 	},
 
 	/**
+	 * Provide a name for this callback chain, much like one would provide a name for a function,
+	 * to aid in creating chain traces
+	 * @param name The name for the callback chain
+	 */
+	set_name : function(name) {
+		this._name = name;
+	},
+
+	/**
 	 * Implement a function-like interface by providing the apply method to invoke the chain
 	 * @param ctx Normally a "context" in which to call this function. Ignored here
 	 * @param args The arguments to this chain. The first should be an environment, the second should be
@@ -212,6 +237,7 @@ _.extend(Chain.prototype, {
 		var env = args[0];
 		var after = args[1] || _.identity;
 
+		// If after() is not already bound to env, we need to pass it along
 		if (this.bind_after_env) {
 			after = _.partial(after, env);
 		}
@@ -252,13 +278,18 @@ _.extend(Chain.prototype, {
 					env._cf.stack = env._cf.stack.concat(params.splice(missing, -missing));
 				}
 
-				// Catch exceptions inside the application and pass them to env.$throw instead
-				try {
-					v.fn.apply(v.ctx, [env, memo].concat(params));
-				}
-				catch (err) {
-					env.$throw(err);
-				}
+				// I thought about making this up to the end user to call in his functions, but in the
+				// end I don't think we lose anything by simply always pushing these to the next tick,
+				// even if they're fully synchronous functions that were chained together.
+				process.nextTick(function() {
+					// Catch exceptions inside the application and pass them to env.$throw instead
+					try {
+						v.fn.apply(v.ctx, [env, memo].concat(params));
+					}
+					catch (err) {
+						env.$throw(err);
+					}
+				});
 			};
 		}, after);
 

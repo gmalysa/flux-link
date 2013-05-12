@@ -7,7 +7,9 @@ A callback management library for Node.js, designed to help manage program flow 
 
 Install via npm:
 
-```npm install flux-link```
+```
+npm install flux-link
+```
 
 ## Overview
 

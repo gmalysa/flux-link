@@ -25,6 +25,31 @@ function mkfn(fn, params, ctx) {
 }
 
 /**
+ * Wraps the after call in an error checking method that will throw if the first argument is not
+ * undefined. This replaces a very frequent error checking snippet
+ * Any arguments after the error check will be forwarded, if
+ * present.
+ *
+ * This is exported to the environment as $check. You'd use it like so:
+ * mysql.conn.query('SELECT * FROM `sample`', function(err, results) {
+ * 	if (err) { env.$throw; }
+ * 	else { after(results); }
+ * });
+ * mysql.conn.query('SELECT * FROM `sample`', env.$check(after));
+ */
+function cf_check(after) {
+	var that = this;
+	return function(err) {
+		if (err) {
+			that.$throw(err);
+		}
+		else {
+			after.apply(null, Array.prototype.slice.call(arguments, 1));
+		}
+	};
+}
+
+/**
  * Creates/extends an object suitable to use as an environment by initializing the stack
  * @param env Optional base environment to update with a stack
  * @param log Function to use to log critical errors (like when $throw() is called with no exception handlers)
@@ -40,7 +65,8 @@ function mkenv(env, log) {
 			$log : log
 		},
 		$throw : _.bind(cf_throw, env),
-		$catch : _.bind(cf_catch, env)
+		$catch : _.bind(cf_catch, env),
+		$check : _.bind(cf_check, env)
 	});
 }
 

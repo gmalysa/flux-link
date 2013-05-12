@@ -5,6 +5,9 @@
  * function-like behavior, allowing it to be invoked with apply(), or manipulated prior to
  * invocation with array functions. Chains can be used multiple times with different
  * environment objects, allowing them to be created once and then reused.
+ *
+ * (c) 2013, Greg Malysa <gmalysa@stanford.edu>
+ * Permission to use granted under the terms of the MIT License. See LICENSE for details.
  */
 
 var _ = require('underscore');
@@ -24,33 +27,18 @@ function mkfn(fn, params, ctx) {
 	};
 }
 
-/**
- * Wraps the after call in an error checking method that will throw if the first argument is not
- * undefined. This replaces a very frequent error checking snippet
- * Any arguments after the error check will be forwarded, if
- * present.
- *
- * This is exported to the environment as $check. You'd use it like so:
- * mysql.conn.query('SELECT * FROM `sample`', function(err, results) {
- * 	if (err) { env.$throw; }
- * 	else { after(results); }
- * });
- * mysql.conn.query('SELECT * FROM `sample`', env.$check(after));
- */
-function cf_check(after) {
-	var that = this;
-	return function(err) {
-		if (err) {
-			that.$throw(err);
-		}
-		else {
-			after.apply(null, Array.prototype.slice.call(arguments, 1));
-		}
-	};
-}
 
 /**
- * Creates/extends an object suitable to use as an environment by initializing the stack
+ * Creates/extends an object suitable to use as an environment by initializing the stack and some utility
+ * methods.
+ *
+ * Calling convention for passing arguments on the stack: Arguments are pushed in the order they are expected,
+ * that is:
+ * [---lower stack frames---][ push arg 1 ][ push arg 2 ][ push arg 3 ]
+ * When calling the next method, the appropriate number of arguments will be popped off of the end of the stack,
+ * so if after only requires two arguments, it will pop off arg 2 and arg 3, leaving arg 1 on the stack. This
+ * is useful for passing arguments past function calls or returning multiple values from a function call.
+ *
  * @param env Optional base environment to update with a stack
  * @param log Function to use to log critical errors (like when $throw() is called with no exception handlers)
  * @return environment object to be passed to chain.apply
@@ -60,6 +48,7 @@ function mkenv(env, log) {
 	return _.extend(env, {
 		_cf : {
 			stack : [],
+			call_stack : [],
 			abort_stack : [],
 			abort_after : null,
 			$log : log
@@ -79,7 +68,7 @@ function mkenv(env, log) {
  */
 function cf_throw() {
 	if (this._cf.abort_stack.length == 0) {
-		// Nothing to catch the exception, so log it and then just stop processing
+		// Nothing to catch the exception, so log it and then just stop processing, I guess
 		this._cf.$log('Uncaught exception -- processing chain terminated with no continuation');
 	}
 	else {
@@ -107,6 +96,38 @@ function cf_catch() {
 }
 
 /**
+ * Wraps the after call in an error checking method that will throw if the first argument is not
+ * undefined. This replaces a very frequent error checking snippet
+ * Any arguments after the error check will be forwarded, if
+ * present.
+ *
+ * This is exported to the environment as $check. You'd use it to replace code like this:
+ * 
+ * mysql.conn.query('SELECT * FROM `sample`', function(err, results) {
+ * 	if (err) { env.$throw; }
+ * 	else { after(results); }
+ * });
+ * 
+ * which becomes:
+ *
+ * mysql.conn.query('SELECT * FROM `sample`', env.$check(after));
+ *
+ * Note that unlike env.$throw, which is passed as a function without evaluation, env.$check is
+ * evaluated and its result is passed as the callback.
+ */
+function cf_check(after) {
+	var that = this;
+	return function(err) {
+		if (err) {
+			that.$throw(err);
+		}
+		else {
+			after.apply(null, Array.prototype.slice.call(arguments, 1));
+		}
+	};
+}
+
+/**
  * Creates an object that represents a series of functions that will be called sequentially
  * These functions must have "prototype" information given through mkfn. This is because fn.length
  * is not a reliable way to get the number of arguments. For instance, if _.partial() or _.bind()
@@ -114,6 +135,7 @@ function cf_catch() {
  * arguments for the wrapped function. That said, if someone passes a function instead of the result
  * from mkfn(), we will try to wrap it as best we can, and so we have to trust Function.length
  * @param fns Array of functions to form the chain, with definitions given by mkfn()
+ * @param ... Or, a bunch of functions not as an array, will convert them appropriately
  */
 function Chain(fns) {
 	if (_.isArray(fns))
@@ -130,6 +152,15 @@ function Chain(fns) {
 		if (that.fns[0])
 			return that.fns[0].params;
 		return 0;
+	});
+
+	this.__defineGetter__('name', function() {
+		if (that.name)
+			return that.name;
+		else if (that.fns[0])
+			return that.fns[0].name;
+		else
+			return '(anonymous chain)';
 	});
 }
 
@@ -173,7 +204,6 @@ _.extend(Chain.prototype, {
 
 	/**
 	 * Implement a function-like interface by providing the apply method to invoke the chain
-	 * @todo Fix stack argument passing, the current approach is (maybe) wrong!
 	 * @param ctx Normally a "context" in which to call this function. Ignored here
 	 * @param args The arguments to this chain. The first should be an environment, the second should be
 	 *             an optional callback. Anything after that is forwarded on the stack to the first method
@@ -188,10 +218,21 @@ _.extend(Chain.prototype, {
 
 		// Push abortion information, if present
 		if (this.abort) {
+			// Push handler to exception handling stack
 			env._cf.abort_stack.push({
 				fn : this.abort,
 				after : after
 			});
+
+			// Wrap after() to remove the exception handler from the stack when this chain's context ends
+			// Note that this is not the same after() as was pushed to the stack, so if we experience an
+			// exception, it will not pop two handlers--this version of after is only called if no exception
+			// happens
+			var _after = after;
+			after = function() {
+				env._cf.abort_stack.pop();
+				_after();
+			};
 		}
 
 		// Create callback chain
@@ -205,7 +246,9 @@ _.extend(Chain.prototype, {
 					params = env._cf.stack.splice(-missing, missing).concat(params);
 				}
 				else if (missing < 0) {
-					// Push extra args to the stack
+					// Push extra args to the stack, so for instance if passed arg1, arg2, and arg3,
+					// but we only consume arg1, the stack will have [arg2, arg3] pushed to it and made
+					// available to the next function if it needs additional arguments
 					env._cf.stack = env._cf.stack.concat(params.splice(missing, -missing));
 				}
 
@@ -242,7 +285,7 @@ _.extend(Chain.prototype, {
 	 * @param pos The position at which to insert the function
 	 */
 	insert : function(fn, pos) {
-		this.fns.splice(pos, 0, fn);
+		this.fns.splice(pos, 0, this.wrap(fn));
 	},
 
 	/**

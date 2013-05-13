@@ -17,13 +17,15 @@ var _ = require('underscore');
  * how many arguments are retrieved from the stack to invoke the function.
  * @param fn Function object to call
  * @param params Integer count of parameters
+ * @param name Name to give the function in call/back traces (defaults to fn.name if omitted)
  * @param ctx Context in which to call the function, null if not necessary
  */
-function mkfn(fn, params, ctx) {
+function mkfn(fn, params, name, ctx) {
 	return {
 		fn : fn,
 		ctx : ctx || null,
-		params : params || 0
+		params : params || 0,
+		name : name || null,
 	};
 }
 
@@ -62,7 +64,8 @@ function mkenv(env, log) {
 		$check : _.bind(cf_check, env),
 		$push : _.bind(cf_push, env),
 		$pop : _.bind(cf_pop, env),
-		$get_call_trace : _.bind(cf_get_trace, env)
+		$get_full_trace : _.bind(cf_get_full_trace, env),
+		$get_backtrace : _.bind(cf_get_backtrace, env)
 	});
 }
 
@@ -98,11 +101,7 @@ function cf_push_ctx(name) {
 	}
 
 	var ctx = new ContextHead();
-
-	if (this._cf.call_current !== null) {
-		this._cf.call_current.child = ctx;
-	}
-
+	this._cf.call_current.child = ctx;
 	this._cf.call_stack.push(this._cf.call_current);
 	this._cf.call_current = ctx;
 }
@@ -120,6 +119,10 @@ function cf_push_call(name) {
 
 /**
  * Pops the topmost context, done just before the after method is executed at the end of a chain
+ * Debating whether we should check the stack length before popping, and possibly reset the call_first
+ * pointer, etc., but the only time this could result in an invalid value is when popping the topmost
+ * call chain off the stack. An environment should never be re-used, so having bad state after that
+ * is not an issue, and we do get a trivially small performance improvement by not checking...
  */
 function cf_pop_ctx() {
 	this._cf.call_current = this._cf.call_stack.pop();
@@ -129,8 +132,8 @@ function cf_pop_ctx() {
  * Top level trace function that retrieves the trace for this execution from the beginning
  * @return string Complete call trace string
  */
-function cf_get_trace() {
-	return cf_get_ctx_string(this._cf.call_first, 0);
+function cf_get_full_trace() {
+	return cf_get_full_ctx_string(this._cf.call_first, 0);
 }
 
 /**
@@ -141,13 +144,12 @@ function cf_get_trace() {
  * @param ctx The context to use as a root node
  * @param depth The depth level of this context (used for indentation)
  */
-function cf_get_ctx_string(ctx, depth) {
+function cf_get_full_ctx_string(ctx, depth) {
 	if (ctx === null)
 		return '';
 
-	var recurse = cf_get_ctx_string(ctx.child, depth+1) + cf_get_ctx_string(ctx.next, depth);
+	var recurse = cf_get_full_ctx_string(ctx.child, depth+1) + cf_get_full_ctx_string(ctx.next, depth);
 	
-	// Don't print context heads because they just clutter things
 	if (ctx instanceof ContextHead)
 		return recurse;
 	
@@ -155,21 +157,67 @@ function cf_get_ctx_string(ctx, depth) {
 }
 
 /**
+ * Retrieves a backtrace, that is, the immediate series of function calls leading up to the current
+ * one. This retrieves an array of arrays, where each nested array is [fn name, depth]. This omits context
+ * heads because they just clutter up the output but don't represent user function calls.
+ *
+ * @return Array packed backtrace information, containing the direct path to the current function call
+ */
+function cf_get_backtrace() {
+	var bt = []
+	var ctx = this._cf.call_first;
+	var depth = 0;
+
+	while (ctx != null) {
+		if (!(ctx instanceof ContextHead))
+			bt.push([ctx.name, depth]);
+		depth += (ctx.bt_depth_increase() ? 1 : 0);
+		ctx = ctx.bt_get_next();
+	}
+
+	return bt;
+}
+
+/**
+ * Format a backtrace into a string like the stack trace that is produced when an instance of Error
+ * is created
+ * @param bt Array backtrace produced by $get_backtrace()
+ * @return string backtrace formatted like a stack trace
+ */
+function cf_format_backtrace(bt) {
+	var depth = 0;
+	var maxDepth = bt[bt.length-1][1];
+
+	return _.reduceRight(bt, function(memo, v) {
+		if (depth == v[1])
+			loc = 'after ';
+		else
+			loc = 'in ';
+		depth = v[1];
+		return memo + '\n      ' + (new Array(1+maxDepth-depth).join('  ')) + loc + v[0];
+	}, '');
+}
+
+/**
  * Function to throw an exception within an environment, calling the topmost handler on the abortion
  * stack. This should be called *on* the env object, as env.$throw(). Optional arguments are allowed,
  * their interpretation is up to the user. They will be passed to the first handler (and only to the
  * first handler, unless it decides to pass them further).
+ * @param err Error object to throw, or a message if not
  * @param varargs Forwarded arguments to the first handler
  */
-function cf_throw() {
+function cf_throw(err) {
+	err.backtrace = cf_format_backtrace(this.$get_backtrace());
+
 	if (this._cf.abort_stack.length == 0) {
 		// Nothing to catch the exception, so log it and then just stop processing, I guess
 		this._cf.$log('Uncaught exception -- processing chain terminated with no continuation');
+		this._cf.$log('Backtrace: ' + err.backtrace);
 	}
 	else {
 		var abort = this._cf.abort_stack.pop();
 		this._cf.abort_after = abort.after;
-		abort.fn.apply(null, [this].concat(Array.prototype.slice.call(arguments)));
+		abort.fn.apply(null, [this, err].concat(Array.prototype.slice.call(arguments, 1)));
 	}
 }
 
@@ -233,6 +281,29 @@ function Context(name) {
 	this.child = null;
 	this.name = name;
 }
+
+// Class methods for the Context
+_.extend(Context.prototype, {
+	/**
+	 * When doing a backtrace traversal, retrieve the context that comes next, after this one,
+	 * which collapses children of contexts that are not the inner-most, to avoid clutter.
+	 * @return Context The next context in the most direct backtrace path
+	 */
+	bt_get_next : function() {
+		if (this.next !== null)
+			return this.next;
+		else
+			return this.child;
+	},
+
+	/**
+	 * When doing a backtrace traversal, this tells us whether depth increased or not
+	 * @return bool True if bt_next() returns this.child, false if this.next
+	 */
+	bt_depth_increase : function() {
+		return this.next === null;
+	}
+});
 
 /**
  * Head node for a context list, inserted automatically when a context is pushed onto the stack,
@@ -364,7 +435,7 @@ _.extend(Chain.prototype, {
 
 		// Create callback chain
 		var cb = _.reduceRight(this.fns, function(memo, v) {
-			return [function() {
+			return function() {
 				var params = that.handle_args(env, v, Array.prototype.slice.call(arguments));
 
 				// I thought about making this up to the end user to call in his functions, but in the
@@ -373,28 +444,29 @@ _.extend(Chain.prototype, {
 				process.nextTick(function() {
 					// Catch exceptions inside the application and pass them to env.$throw instead
 					try {
-						env._cf.$push_call(memo[1]);
-						v.fn.apply(v.ctx, [env, memo[0]].concat(params));
+						if (v.name)
+							env._cf.$push_call(v.name);
+						else
+							env._cf.$push_call(v.fn.name);
+							
+						v.fn.apply(v.ctx, [env, memo].concat(params));
 					}
 					catch (err) {
 						env.$throw(err);
 					}
 				});
-			}, v.fn.name];
-		}, [
-			function() {
-				// Remove this call chain's context from the stack, then call after with forwarded arguments
-				env._cf.$pop_ctx();
-				var params = Array.prototype.slice.call(arguments);
-				after.apply(null, params);
-			},
-			after_name
-		]);
+			};
+		}, function() {
+			// Remove this call chain's context from the stack, then call after with forwarded arguments
+			env._cf.$pop_ctx();
+			env._cf.$push_call(after_name);
+			var params = Array.prototype.slice.call(arguments);
+			after.apply(null, params);
+		});
 
 		// Invoke chain, passing forward arguments received
 		env._cf.$push_ctx(this.name);
-		env._cf.$push_call(cb[1]);
-		cb[0].apply(null, args.splice(2));
+		cb.apply(null, args.splice(2));
 	},
 
 	/**

@@ -47,15 +47,22 @@ function mkenv(env, log) {
 	return _.extend(env, {
 		_cf : {
 			stack : [],
+			call_first : null,
+			call_current : null,
+			call_stack : [],
 			abort_stack : [],
 			abort_after : null,
-			$log : log
+			$log : log,
+			$push_ctx : _.bind(cf_push_ctx, env),
+			$pop_ctx : _.bind(cf_pop_ctx, env),
+			$push_call : _.bind(cf_push_call, env)
 		},
 		$throw : _.bind(cf_throw, env),
 		$catch : _.bind(cf_catch, env),
 		$check : _.bind(cf_check, env),
 		$push : _.bind(cf_push, env),
-		$pop : _.bind(cf_pop, env)
+		$pop : _.bind(cf_pop, env),
+		$get_call_trace : _.bind(cf_get_trace, env)
 	});
 }
 
@@ -75,6 +82,76 @@ function cf_push(value) {
  */
 function cf_pop() {
 	return this._cf.stack.pop();
+}
+
+/**
+ * Pushes a new context onto the call stack, which is done whenever a new chain is entered. Each context
+ * tracks the function calls within that chain, but is removed after the chain exists, in order to simplify
+ * some of the "depth" if we need to print a backtrace.
+ * @param name The name of the chain creating a context
+ */
+function cf_push_ctx(name) {
+	if (this._cf.call_first === null) {
+		var ctx = new Context(name);
+		this._cf.call_current = ctx;
+		this._cf.call_first = ctx;
+	}
+
+	var ctx = new ContextHead();
+
+	if (this._cf.call_current !== null) {
+		this._cf.call_current.child = ctx;
+	}
+
+	this._cf.call_stack.push(this._cf.call_current);
+	this._cf.call_current = ctx;
+}
+
+/**
+ * Pushes a function call into the current call context, which is done whenever a function within a chain
+ * is evaluated (regardless of type).
+ * @param name The name of the function call
+ */
+function cf_push_call(name) {
+	var ctx = new Context(name);
+	this._cf.call_current.next = ctx;
+	this._cf.call_current = ctx;
+}
+
+/**
+ * Pops the topmost context, done just before the after method is executed at the end of a chain
+ */
+function cf_pop_ctx() {
+	this._cf.call_current = this._cf.call_stack.pop();
+}
+
+/**
+ * Top level trace function that retrieves the trace for this execution from the beginning
+ * @return string Complete call trace string
+ */
+function cf_get_trace() {
+	return cf_get_ctx_string(this._cf.call_first, 0);
+}
+
+/**
+ * Retrieves a string describing the given context/call chain. This uses a depth-first traversal
+ * algorithm to print out chains in a logical order. This prints the entire call chain, not just
+ * the active portion, which is useful for determining all of the function calls that were made
+ * after the topmost chain has completed execution
+ * @param ctx The context to use as a root node
+ * @param depth The depth level of this context (used for indentation)
+ */
+function cf_get_ctx_string(ctx, depth) {
+	if (ctx === null)
+		return '';
+
+	var recurse = cf_get_ctx_string(ctx.child, depth+1) + cf_get_ctx_string(ctx.next, depth);
+	
+	// Don't print context heads because they just clutter things
+	if (ctx instanceof ContextHead)
+		return recurse;
+	
+	return '\n' + (new Array(depth+1)).join('  ') + ctx.name + recurse;
 }
 
 /**
@@ -144,6 +221,28 @@ function cf_check(after) {
 		}
 	};
 }
+
+/**
+ * A call context object, which is used to build the call graph for the execution of a chain
+ * at run time, this stores a pair of pointers, one to the next call in the list and one to the
+ * first child.
+ * @param name The name to use when printing this context during a call trace
+ */
+function Context(name) {
+	this.next = null;
+	this.child = null;
+	this.name = name;
+}
+
+/**
+ * Head node for a context list, inserted automatically when a context is pushed onto the stack,
+ * to start the list of subcalls within that context
+ */
+function ContextHead() {
+	Context.call(this, '__ContextHead__');
+}
+ContextHead.prototype = new Context();
+ContextHead.prototype.constructor = ContextHead;
 
 /**
  * Creates an object that represents a series of functions that will be called sequentially
@@ -236,13 +335,15 @@ _.extend(Chain.prototype, {
 	apply : function(ctx, args) {
 		var env = args[0];
 		var after = args[1] || _.identity;
+		var that = this;
+		var after_name = after.name || '(lambda function)';
 
 		// If after() is not already bound to env, we need to pass it along
 		if (this.bind_after_env) {
 			after = _.partial(after, env);
 		}
 
-		// Push abortion information, if present
+		// Push exception information, if present
 		if (this.abort) {
 			// Push handler to exception handling stack
 			env._cf.abort_stack.push({
@@ -263,20 +364,8 @@ _.extend(Chain.prototype, {
 
 		// Create callback chain
 		var cb = _.reduceRight(this.fns, function(memo, v) {
-			return function() {
-				var missing = v.params - arguments.length;
-				var params = Array.prototype.slice.call(arguments);
-				
-				// Get missing args from the stack
-				if (missing > 0) {
-					params = env._cf.stack.splice(-missing, missing).concat(params);
-				}
-				else if (missing < 0) {
-					// Push extra args to the stack, so for instance if passed arg1, arg2, and arg3,
-					// but we only consume arg1, the stack will have [arg2, arg3] pushed to it and made
-					// available to the next function if it needs additional arguments
-					env._cf.stack = env._cf.stack.concat(params.splice(missing, -missing));
-				}
+			return [function() {
+				var params = that.handle_args(env, v, Array.prototype.slice.call(arguments));
 
 				// I thought about making this up to the end user to call in his functions, but in the
 				// end I don't think we lose anything by simply always pushing these to the next tick,
@@ -284,17 +373,51 @@ _.extend(Chain.prototype, {
 				process.nextTick(function() {
 					// Catch exceptions inside the application and pass them to env.$throw instead
 					try {
-						v.fn.apply(v.ctx, [env, memo].concat(params));
+						env._cf.$push_call(memo[1]);
+						v.fn.apply(v.ctx, [env, memo[0]].concat(params));
 					}
 					catch (err) {
 						env.$throw(err);
 					}
 				});
-			};
-		}, after);
+			}, v.fn.name];
+		}, [
+			function() {
+				// Remove this call chain's context from the stack, then call after with forwarded arguments
+				env._cf.$pop_ctx();
+				var params = Array.prototype.slice.call(arguments);
+				after.apply(null, params);
+			},
+			after_name
+		]);
 
 		// Invoke chain, passing forward arguments received
-		cb.apply(null, args.splice(2));
+		env._cf.$push_ctx(this.name);
+		env._cf.$push_call(cb[1]);
+		cb[0].apply(null, args.splice(2));
+	},
+
+	/**
+	 * Helper function that is used to process the arguments and produce an array of proper arguments
+	 * to be passed to fn.apply()
+	 * @param env The environment object where the stack might be used
+	 * @param info Function information (result of mkfn, normally)
+	 * @param args The arguments array passed to the outer function
+	 * @return Array arguments that should be passed to the actual function being called
+	 */
+	handle_args : function (env, info, args) {
+		var missing = info.params - args.length;
+
+		// Get missing args from the stack
+		if (missing > 0)
+			return env._cf.stack.splice(-missing, missing).concat(args);
+		else {
+			// Push extra args to the stack, so for instance if passed arg1, arg2, and arg3,
+			// but we only consume arg1, the stack will have [arg2, arg3] pushed to it and made
+			// available to the next function if it needs additional arguments
+			env._cf.stack = env._cf.stack.concat(args.splice(missing, -missing));
+			return args;
+		}
 	},
 
 	/**

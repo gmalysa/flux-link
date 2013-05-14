@@ -11,6 +11,7 @@
  */
 
 var _ = require('underscore');
+var Environment = require('./environment');
 
 /**
  * Makes a function specification that is useful to pass to the Chain constructor by saving
@@ -18,7 +19,7 @@ var _ = require('underscore');
  * @param fn Function object to call
  * @param params Integer count of parameters
  * @param name Name to give the function in call/back traces (defaults to fn.name if omitted)
- * @param ctx Context in which to call the function, null if not necessary
+ * @param ctx (Javscript) context in which to call the function, null if not necessary
  */
 function mkfn(fn, params, name, ctx) {
 	return {
@@ -28,292 +29,6 @@ function mkfn(fn, params, name, ctx) {
 		name : name || null,
 	};
 }
-
-/**
- * Creates/extends an object suitable to use as an environment by initializing the stack and some utility
- * methods.
- *
- * Calling convention for passing arguments on the stack: Arguments are pushed in the order they are expected,
- * that is:
- * [---lower stack frames---][ push arg 1 ][ push arg 2 ][ push arg 3 ]
- * When calling the next method, the appropriate number of arguments will be popped off of the end of the stack,
- * so if after only requires two arguments, it will pop off arg 2 and arg 3, leaving arg 1 on the stack. This
- * is useful for passing arguments past function calls or returning multiple values from a function call.
- *
- * @param env Optional base environment with initial local variables
- * @param log Function to use to log critical errors (like when $throw() is called with no exception handlers)
- * @return environment object to be passed to chain.apply
- */
-function mkenv(env, log) {
-	env = env || {};
-	return _.extend(env, {
-		_cf : {
-			stack : [],
-			call_first : null,
-			call_current : null,
-			call_stack : [],
-			abort_stack : [],
-			abort_after : null,
-			$log : log,
-			$push_ctx : _.bind(cf_push_ctx, env),
-			$pop_ctx : _.bind(cf_pop_ctx, env),
-			$push_call : _.bind(cf_push_call, env)
-		},
-		$throw : _.bind(cf_throw, env),
-		$catch : _.bind(cf_catch, env),
-		$check : _.bind(cf_check, env),
-		$push : _.bind(cf_push, env),
-		$pop : _.bind(cf_pop, env),
-		$get_full_trace : _.bind(cf_get_full_trace, env),
-		$get_backtrace : _.bind(cf_get_backtrace, env)
-	});
-}
-
-/**
- * Pushes a value to the parameter stack. Wraps the 'private' member field _cf, so that user code does
- * not need to be aware of it
- * @param value Any, the value to push to the stack
- */
-function cf_push(value) {
-	this._cf.stack.push(value);
-}
-
-/**
- * Pops a value from the parameter stack. Again, this is to keep user code from needing to touch our
- * internal state
- * @return topmost value from the stack
- */
-function cf_pop() {
-	return this._cf.stack.pop();
-}
-
-/**
- * Pushes a new context onto the call stack, which is done whenever a new chain is entered. Each context
- * tracks the function calls within that chain, but is removed after the chain exists, in order to simplify
- * some of the "depth" if we need to print a backtrace.
- * @param name The name of the chain creating a context
- */
-function cf_push_ctx(name) {
-	if (this._cf.call_first === null) {
-		var ctx = new Context(name);
-		this._cf.call_current = ctx;
-		this._cf.call_first = ctx;
-	}
-
-	var ctx = new ContextHead();
-	this._cf.call_current.child = ctx;
-	this._cf.call_stack.push(this._cf.call_current);
-	this._cf.call_current = ctx;
-}
-
-/**
- * Pushes a function call into the current call context, which is done whenever a function within a chain
- * is evaluated (regardless of type).
- * @param name The name of the function call
- */
-function cf_push_call(name) {
-	var ctx = new Context(name);
-	this._cf.call_current.next = ctx;
-	this._cf.call_current = ctx;
-}
-
-/**
- * Pops the topmost context, done just before the after method is executed at the end of a chain
- * Debating whether we should check the stack length before popping, and possibly reset the call_first
- * pointer, etc., but the only time this could result in an invalid value is when popping the topmost
- * call chain off the stack. An environment should never be re-used, so having bad state after that
- * is not an issue, and we do get a trivially small performance improvement by not checking...
- */
-function cf_pop_ctx() {
-	this._cf.call_current = this._cf.call_stack.pop();
-}
-
-/**
- * Top level trace function that retrieves the trace for this execution from the beginning
- * @return string Complete call trace string
- */
-function cf_get_full_trace() {
-	return cf_get_full_ctx_string(this._cf.call_first, 0);
-}
-
-/**
- * Retrieves a string describing the given context/call chain. This uses a depth-first traversal
- * algorithm to print out chains in a logical order. This prints the entire call chain, not just
- * the active portion, which is useful for determining all of the function calls that were made
- * after the topmost chain has completed execution
- * @param ctx The context to use as a root node
- * @param depth The depth level of this context (used for indentation)
- */
-function cf_get_full_ctx_string(ctx, depth) {
-	if (ctx === null)
-		return '';
-
-	var recurse = cf_get_full_ctx_string(ctx.child, depth+1) + cf_get_full_ctx_string(ctx.next, depth);
-	
-	if (ctx instanceof ContextHead)
-		return recurse;
-	
-	return '\n' + (new Array(depth+1)).join('  ') + ctx.name + recurse;
-}
-
-/**
- * Retrieves a backtrace, that is, the immediate series of function calls leading up to the current
- * one. This retrieves an array of arrays, where each nested array is [fn name, depth]. This omits context
- * heads because they just clutter up the output but don't represent user function calls.
- *
- * @return Array packed backtrace information, containing the direct path to the current function call
- */
-function cf_get_backtrace() {
-	var bt = []
-	var ctx = this._cf.call_first;
-	var depth = 0;
-
-	while (ctx != null) {
-		if (!(ctx instanceof ContextHead))
-			bt.push([ctx.name, depth]);
-		depth += (ctx.bt_depth_increase() ? 1 : 0);
-		ctx = ctx.bt_get_next();
-	}
-
-	return bt;
-}
-
-/**
- * Format a backtrace into a string like the stack trace that is produced when an instance of Error
- * is created
- * @param bt Array backtrace produced by $get_backtrace()
- * @return string backtrace formatted like a stack trace
- */
-function cf_format_backtrace(bt) {
-	var depth = 0;
-	var maxDepth = bt[bt.length-1][1];
-
-	return _.reduceRight(bt, function(memo, v) {
-		if (depth == v[1])
-			loc = 'after ';
-		else
-			loc = 'in ';
-		depth = v[1];
-		return memo + '\n      ' + (new Array(1+maxDepth-depth).join('  ')) + loc + v[0];
-	}, '');
-}
-
-/**
- * Function to throw an exception within an environment, calling the topmost handler on the abortion
- * stack. This should be called *on* the env object, as env.$throw(). Optional arguments are allowed,
- * their interpretation is up to the user. They will be passed to the first handler (and only to the
- * first handler, unless it decides to pass them further).
- * @param err Error object to throw, or a message if not
- * @param varargs Forwarded arguments to the first handler
- */
-function cf_throw(err) {
-	err.backtrace = cf_format_backtrace(this.$get_backtrace());
-
-	if (this._cf.abort_stack.length == 0) {
-		// Nothing to catch the exception, so log it and then just stop processing, I guess
-		this._cf.$log('Uncaught exception -- processing chain terminated with no continuation');
-		this._cf.$log('Backtrace: ' + err.backtrace);
-	}
-	else {
-		var abort = this._cf.abort_stack.pop();
-		this._cf.abort_after = abort.after;
-		abort.fn.apply(null, [this, err].concat(Array.prototype.slice.call(arguments, 1)));
-	}
-}
-
-/**
- * Function to catch an exception thrown within this environment, passing control back to the surviving
- * abort_after() handler. If no such handler exists, log an error and then terminate the chain, as there
- * are no real other options. The handler will be invoked with the environment variable as its first
- * argument, which makes it suitable for passing a Chain as a handler
- */
-function cf_catch() {
-	var after = this._cf.abort_after;
-
-	if (after && after.apply) {
-		after.apply(null);
-	}
-	else {
-		this._cf.$log('Caught exception, but no after() exists -- processing chain terminated');
-	}
-}
-
-/**
- * Wraps the after call in an error checking method that will throw if the first argument is not
- * undefined. This replaces a very frequent error checking snippet
- * Any arguments after the error check will be forwarded, if
- * present.
- *
- * This is exported to the environment as $check. You'd use it to replace code like this:
- * 
- * mysql.conn.query('SELECT * FROM `sample`', function(err, results) {
- * 	if (err) { env.$throw; }
- * 	else { after(results); }
- * });
- * 
- * which becomes:
- *
- * mysql.conn.query('SELECT * FROM `sample`', env.$check(after));
- *
- * Note that unlike env.$throw, which is passed as a function without evaluation, env.$check is
- * evaluated and its result is passed as the callback.
- */
-function cf_check(after) {
-	var that = this;
-	return function(err) {
-		if (err) {
-			that.$throw(err);
-		}
-		else {
-			after.apply(null, Array.prototype.slice.call(arguments, 1));
-		}
-	};
-}
-
-/**
- * A call context object, which is used to build the call graph for the execution of a chain
- * at run time, this stores a pair of pointers, one to the next call in the list and one to the
- * first child.
- * @param name The name to use when printing this context during a call trace
- */
-function Context(name) {
-	this.next = null;
-	this.child = null;
-	this.name = name;
-}
-
-// Class methods for the Context
-_.extend(Context.prototype, {
-	/**
-	 * When doing a backtrace traversal, retrieve the context that comes next, after this one,
-	 * which collapses children of contexts that are not the inner-most, to avoid clutter.
-	 * @return Context The next context in the most direct backtrace path
-	 */
-	bt_get_next : function() {
-		if (this.next !== null)
-			return this.next;
-		else
-			return this.child;
-	},
-
-	/**
-	 * When doing a backtrace traversal, this tells us whether depth increased or not
-	 * @return bool True if bt_next() returns this.child, false if this.next
-	 */
-	bt_depth_increase : function() {
-		return this.next === null;
-	}
-});
-
-/**
- * Head node for a context list, inserted automatically when a context is pushed onto the stack,
- * to start the list of subcalls within that context
- */
-function ContextHead() {
-	Context.call(this, '__ContextHead__');
-}
-ContextHead.prototype = new Context();
-ContextHead.prototype.constructor = ContextHead;
 
 /**
  * Creates an object that represents a series of functions that will be called sequentially
@@ -333,6 +48,7 @@ function Chain(fns) {
 
 	var that = this;
 	this.bind_after_env = false;
+	this.name = '(anonymous chain)';
 
 	// In newer versions of nodejs:
 	//this.defineProperty(this, 'length', {get : function() { return this.fns[0].params; }});
@@ -340,13 +56,6 @@ function Chain(fns) {
 		if (that.fns[0])
 			return that.fns[0].params;
 		return 0;
-	});
-
-	this.__defineGetter__('name', function() {
-		if (that._name)
-			return that._name;
-		else
-			return '(anonymous chain)';
 	});
 }
 
@@ -389,15 +98,6 @@ _.extend(Chain.prototype, {
 	},
 
 	/**
-	 * Provide a name for this callback chain, much like one would provide a name for a function,
-	 * to aid in creating chain traces
-	 * @param name The name for the callback chain
-	 */
-	set_name : function(name) {
-		this._name = name;
-	},
-
-	/**
 	 * Implement a function-like interface by providing the apply method to invoke the chain
 	 * @param ctx Normally a "context" in which to call this function. Ignored here
 	 * @param args The arguments to this chain. The first should be an environment, the second should be
@@ -417,10 +117,7 @@ _.extend(Chain.prototype, {
 		// Push exception information, if present
 		if (this.abort) {
 			// Push handler to exception handling stack
-			env._cf.abort_stack.push({
-				fn : this.abort,
-				after : after
-			});
+			env._fm.$push_exception_handler(this.abort, after);
 
 			// Wrap after() to remove the exception handler from the stack when this chain's context ends
 			// Note that this is not the same after() as was pushed to the stack, so if we experience an
@@ -428,7 +125,7 @@ _.extend(Chain.prototype, {
 			// happens
 			var _after = after;
 			after = function() {
-				env._cf.abort_stack.pop();
+				env._fm.$pop_exception_handler();
 				_after();
 			};
 		}
@@ -445,9 +142,9 @@ _.extend(Chain.prototype, {
 					// Catch exceptions inside the application and pass them to env.$throw instead
 					try {
 						if (v.name)
-							env._cf.$push_call(v.name);
+							env._fm.$push_call(v.name);
 						else
-							env._cf.$push_call(v.fn.name);
+							env._fm.$push_call(v.fn.name);
 							
 						v.fn.apply(v.ctx, [env, memo].concat(params));
 					}
@@ -458,14 +155,14 @@ _.extend(Chain.prototype, {
 			};
 		}, function() {
 			// Remove this call chain's context from the stack, then call after with forwarded arguments
-			env._cf.$pop_ctx();
-			env._cf.$push_call(after_name);
+			env._fm.$pop_ctx();
+			env._fm.$push_call(after_name);
 			var params = Array.prototype.slice.call(arguments);
 			after.apply(null, params);
 		});
 
 		// Invoke chain, passing forward arguments received
-		env._cf.$push_ctx(this.name);
+		env._fm.$push_ctx(this.name);
 		cb.apply(null, args.splice(2));
 	},
 
@@ -482,12 +179,12 @@ _.extend(Chain.prototype, {
 
 		// Get missing args from the stack
 		if (missing > 0)
-			return env._cf.stack.splice(-missing, missing).concat(args);
+			return env._fm.stack.splice(-missing, missing).concat(args);
 		else {
 			// Push extra args to the stack, so for instance if passed arg1, arg2, and arg3,
 			// but we only consume arg1, the stack will have [arg2, arg3] pushed to it and made
 			// available to the next function if it needs additional arguments
-			env._cf.stack = env._cf.stack.concat(args.splice(missing, -missing));
+			env._fm.stack = env._fm.stack.concat(args.splice(missing, -missing));
 			return args;
 		}
 	},
@@ -554,7 +251,7 @@ _.extend(Chain.prototype, {
 
 });
 
-// Export our stuff
+// Export library interface-type functions
 module.exports.Chain = Chain;
+module.exports.Environment = Environment;
 module.exports.mkfn = mkfn;
-module.exports.mkenv = mkenv;

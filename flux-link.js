@@ -12,6 +12,7 @@
 
 var _ = require('underscore');
 var Environment = require('./environment');
+var helpers = require('./helpers');
 
 /**
  * Makes a function specification that is useful to pass to the Chain constructor by saving
@@ -107,32 +108,47 @@ _.extend(Chain.prototype, {
 		var env = args[0];
 		var after = args[1] || _.identity;
 		var that = this;
-		var after_name = after.name || '(lambda function)';
+		var after_name = helpers.fname(after, '(lambda function)');
 
 		// If after() is not already bound to env, we need to pass it along
 		if (this.bind_after_env) {
 			after = _.partial(after, env);
 		}
 
-		// Push exception information, if present
-		if (this.exception) {
-			// Push handler to exception handling stack
-			env._fm.$push_exception_handler(this.exception, after);
+		// Each chain adds an exception handler to update context information, but it won't do anything if
+		// no real handler was provided
+		env._fm.$push_exception_handler((function() {
+			// This already includes env, so don't re-include it when forwarding arguments
+			var params = Array.prototype.slice.call(arguments);
 
-			// Wrap after() to remove the exception handler from the stack when this chain's context ends
-			// Note that this is not the same after() as was pushed to the stack, so if we experience an
-			// exception, it will not pop two handlers--this version of after is only called if no exception
-			// happens
-			var _after = after;
-			after = function() {
-				env._fm.$pop_exception_handler();
-				_after();
-			};
-		}
+			if (this.exception) {
+				env._fm.$push_call(helpers.fname(this.exception));
+				env._fm.$pop_ctx();
+				this.exception.apply(null, params);
+			}
+			else {
+				env._fm.$pop_ctx();
+				env.$throw(params);
+			}
+		}).bind(this), after);
+
+		// Create a wrapper for after to always undo the exception handler and update context info before
+		// calling the real handler
+		var real_after = after;
+		after = function __after_glue() {
+			var params = Array.prototype.slice.call(arguments);
+
+			if (!helpers.hide_function(after_name))
+				env._fm.$push_call(after_name);
+
+			env._fm.$pop_ctx();
+			env._fm.$pop_exception_handler();
+			real_after.apply(null, params);
+		};
 
 		// Create callback chain
 		var cb = _.reduceRight(this.fns, function(memo, v) {
-			return function() {
+			return function __chain_inner() {
 				var params = that.handle_args(env, v, Array.prototype.slice.call(arguments));
 
 				// I thought about making this up to the end user to call in his functions, but in the
@@ -141,11 +157,7 @@ _.extend(Chain.prototype, {
 				process.nextTick(function() {
 					// Catch exceptions inside the application and pass them to env.$throw instead
 					try {
-						if (v.name)
-							env._fm.$push_call(v.name);
-						else
-							env._fm.$push_call(v.fn.name);
-							
+						env._fm.$push_call(helpers.fname(v, v.fn.name));
 						v.fn.apply(v.ctx, [env, memo].concat(params));
 					}
 					catch (err) {
@@ -153,13 +165,7 @@ _.extend(Chain.prototype, {
 					}
 				});
 			};
-		}, function() {
-			// Remove this call chain's context from the stack, then call after with forwarded arguments
-			env._fm.$pop_ctx();
-			env._fm.$push_call(after_name);
-			var params = Array.prototype.slice.call(arguments);
-			after.apply(null, params);
-		});
+		}, after);
 
 		// Invoke chain, passing forward arguments received
 		env._fm.$push_ctx(this.name);

@@ -8,6 +8,7 @@
 
 var _ = require('underscore');
 var FluxMeta = require('./flux-meta');
+var helpers = require('./helpers');
 
 /**
  * Creates/extends an object suitable to use as an environment by initializing the stack and some utility
@@ -65,6 +66,10 @@ _.extend(Environment.prototype, {
 			this._fm.$log('Backtrace: ' + err.backtrace);
 		}
 		else {
+			// Update the call graph with changes to context and function calls before moving on
+			this._fm.$push_call('env.$throw');
+
+			// Call the handler, finally
 			h.apply(null, [this].concat(Array.prototype.slice.call(arguments)));
 		}
 	},
@@ -83,6 +88,10 @@ _.extend(Environment.prototype, {
 			this._fm.$log('Backtrace: ' + this._fm.$format_stack_trace(this._fm.$get_back_trace()));
 		}
 		else {
+			// Update the call graph so that we can tell the exception was caught, as well
+			this._fm.$push_call('env.$catch');
+			if (!helpers.hide_function(after))
+				this._fm.$push_call(helpers.fname(after));
 			after.apply(null);
 		}
 	},

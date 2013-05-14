@@ -79,13 +79,13 @@ _.extend(Chain.prototype, {
 	},
 
 	/**
-	 * Sets a function to act as an abortion handler for this Chain. If env.$abort() is invoked, this
+	 * Sets a function to act as an exception handler for this Chain. If env.$throw() is invoked, this
 	 * handler will be called first, then any after() specified during apply(), and finally, it will
-	 * attempt to pass the exception up the abortion tree, if it is not handled.
+	 * attempt to pass the exception down the exception stack until it is caught
 	 * @param fn A plain callback, it must take env as its first argument
 	 */
-	set_abort_handler : function(fn) {
-		this.abort = fn;
+	set_exception_handler : function(fn) {
+		this.exception = fn;
 	},
 
 	/**
@@ -115,9 +115,9 @@ _.extend(Chain.prototype, {
 		}
 
 		// Push exception information, if present
-		if (this.abort) {
+		if (this.exception) {
 			// Push handler to exception handling stack
-			env._fm.$push_exception_handler(this.abort, after);
+			env._fm.$push_exception_handler(this.exception, after);
 
 			// Wrap after() to remove the exception handler from the stack when this chain's context ends
 			// Note that this is not the same after() as was pushed to the stack, so if we experience an

@@ -49,7 +49,7 @@ _.extend(Environment.prototype, {
 	},
 	
 	/**
-	 * Function to throw an exception within an environment, calling the topmost handler on the abortion
+	 * Function to throw an exception within an environment, calling the topmost handler on the exception 
 	 * stack. Optional arguments are allowed, and they will be passed to the handler after the required
 	 * error object.
 	 * @param err Error object to throw, or a message if not

@@ -90,7 +90,7 @@ _.extend(Environment.prototype, {
 		else {
 			// Update the call graph so that we can tell the exception was caught, as well
 			this._fm.$push_call('env.$catch');
-			if (!helpers.hide_function(after))
+			if (!helpers.hide_function(helpers.fname(after)))
 				this._fm.$push_call(helpers.fname(after));
 			after.apply(null);
 		}

@@ -164,7 +164,7 @@ _.extend(FluxMeta.prototype, {
 	 * @return String Trace information formatted like a call tree
 	 */
 	$format_call_tree : function(bt) {
-		return _.reduce(bt, function(memo, v) {
+		return bt.reduce(function(memo, v) {
 			return memo + '\n' + (new Array(1+v[1]).join('  ')) + v[0];
 		}, '');
 	},
@@ -177,9 +177,8 @@ _.extend(FluxMeta.prototype, {
 	 */
 	$format_stack_trace : function(bt) {
 		var depth = 0;
-		//var maxDepth = _.reduce(bt, function(memo, v) { return v[1] > memo ? v[1] : memo; }, 0);
 	
-		return _.reduceRight(bt, function(memo, v) {
+		return bt.reduceRight(function(memo, v) {
 			if (depth == v[1])
 				loc = 'after ';
 			else

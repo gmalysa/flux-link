@@ -43,9 +43,9 @@ function mkfn(fn, params, name, ctx) {
  */
 function Chain(fns) {
 	if (_.isArray(fns))
-		this.fns = _.map(fns, this.wrap);
+		this.fns = fns.map(this.wrap);
 	else
-		this.fns = _.map(Array.prototype.slice.call(arguments), this.wrap);
+		this.fns = Array.prototype.slice.call(arguments).map(this.wrap);
 
 	var that = this;
 	this.bind_after_env = false;
@@ -99,6 +99,29 @@ _.extend(Chain.prototype, {
 	},
 
 	/**
+	 * The exception handling wrapper that is pushed to the stack. Previously this was defined inside
+	 * apply(), but it doesn't need to be a closure, so it is better to define it externally and pass
+	 * it in. This function ensures that context information unwinds properly in the event of exceptions
+	 * being thrown, and it will also invoke handlers if they were defined.
+	 * @param env The environment variable
+	 * @param varargs will be forwarded to the inner exception handler
+	 */
+	exception_handler : function(env) {
+		// This already includes env, so don't re-include it when forwarding arguments
+		var params = Array.prototype.slice.call(arguments);
+
+		if (this.exception) {
+			env._fm.$push_call(helpers.fname(this.exception));
+			env._fm.$pop_ctx();
+			this.exception.apply(null, params);
+		}
+		else {
+			env._fm.$pop_ctx();
+			env.$throw(params);
+		}
+	},
+
+	/**
 	 * Implement a function-like interface by providing the apply method to invoke the chain
 	 * @param ctx Normally a "context" in which to call this function. Ignored here
 	 * @param args The arguments to this chain. The first should be an environment, the second should be
@@ -112,25 +135,11 @@ _.extend(Chain.prototype, {
 
 		// If after() is not already bound to env, we need to pass it along
 		if (this.bind_after_env) {
-			after = _.partial(after, env);
+			after = after.bind(null, env);
 		}
 
-		// Each chain adds an exception handler to update context information, but it won't do anything if
-		// no real handler was provided
-		env._fm.$push_exception_handler((function() {
-			// This already includes env, so don't re-include it when forwarding arguments
-			var params = Array.prototype.slice.call(arguments);
-
-			if (this.exception) {
-				env._fm.$push_call(helpers.fname(this.exception));
-				env._fm.$pop_ctx();
-				this.exception.apply(null, params);
-			}
-			else {
-				env._fm.$pop_ctx();
-				env.$throw(params);
-			}
-		}).bind(this), after);
+		// Each chain adds an exception handler to update context information, it'll call the user handler
+		env._fm.$push_exception_handler(this.exception_handler.bind(this), after);
 
 		// Create a wrapper for after to always undo the exception handler and update context info before
 		// calling the real handler
@@ -147,18 +156,22 @@ _.extend(Chain.prototype, {
 		};
 
 		// Create callback chain
-		var cb = _.reduceRight(this.fns, function(memo, v) {
+		var cb = this.fns.reduceRight(function(memo, v) {
 			return function __chain_inner() {
+				// Create parameters array for the function we're calling
 				var params = that.handle_args(env, v, Array.prototype.slice.call(arguments));
+				params.unshift(env, memo);
 
 				// I thought about making this up to the end user to call in his functions, but in the
 				// end I don't think we lose anything by simply always pushing these to the next tick,
 				// even if they're fully synchronous functions that were chained together.
+				// Doing this for every single function in the chain slows us down *significantly* so
+				// it might be worthwhile to investigate not using nextTick every time
 				process.nextTick(function() {
 					// Catch exceptions inside the application and pass them to env.$throw instead
 					try {
 						env._fm.$push_call(helpers.fname(v, v.fn.name));
-						v.fn.apply(v.ctx, [env, memo].concat(params));
+						v.fn.apply(v.ctx, params);
 					}
 					catch (err) {
 						env.$throw(err);
@@ -184,7 +197,9 @@ _.extend(Chain.prototype, {
 		var missing = info.params - args.length;
 
 		// Get missing args from the stack
-		if (missing > 0)
+		if (missing == 0)
+			return args;
+		else if (missing > 0)
 			return env._fm.stack.splice(-missing, missing).concat(args);
 		else {
 			// Push extra args to the stack, so for instance if passed arg1, arg2, and arg3,

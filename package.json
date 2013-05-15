@@ -1,6 +1,6 @@
 {
   "name"          : "flux-link",
-  "version"       : "0.2.0",
+  "version"       : "0.2.1",
   "description"   : "Callback chaining library to improve control flow in async-heavy programs.",
   "keywords"      : ["control", "flow", "callback", "chain"],
   "author"        : "Greg Malysa <gmalysa@stanford.edu>",

@@ -26,6 +26,7 @@ var helpers = require('./helpers');
  */
 function Environment(env, log) {
 	env = env || {};
+	log = log || console.log;
 	_.extend(this, env, {
 		_fm : new FluxMeta(this, log)
 	});

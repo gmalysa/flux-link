@@ -30,6 +30,10 @@ function Environment(env, log) {
 	_.extend(this, env, {
 		_fm : new FluxMeta(this, log)
 	});
+
+	// Bind member methods so that they can be passed as callbacks
+	this.$throw = this.$throw.bind(this);
+	this.$catch = this.$catch.bind(this);
 }
 
 // Instance methods for Environment

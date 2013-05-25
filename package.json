@@ -8,5 +8,6 @@
   "licenses"      : ["MIT"],
   "main"          : "./flux-link",
   "dependencies"  : { "underscore" : ">= 1.4.0" },
+  "devDependencies" : { "nodeunit" : "0.8.0" },
   "engines"       : { "node": "> 0.8.0" }
 }

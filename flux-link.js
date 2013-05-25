@@ -14,6 +14,12 @@ var _ = require('underscore');
 var Environment = require('./environment');
 var helpers = require('./helpers');
 
+var slice = Array.prototype.slice;
+var nextTick = process.nextTick;
+
+if (process.version.match(/\.(11|10)\./))
+	nextTick = setImmediate;
+
 /**
  * Makes a function specification that is useful to pass to the Chain constructor by saving
  * how many arguments are retrieved from the stack to invoke the function.
@@ -45,7 +51,7 @@ function Chain(fns) {
 	if (_.isArray(fns))
 		this.fns = fns.map(this.wrap);
 	else
-		this.fns = Array.prototype.slice.call(arguments).map(this.wrap);
+		this.fns = slice.call(arguments).map(this.wrap);
 
 	var that = this;
 	this.bind_after_env = false;
@@ -108,7 +114,7 @@ _.extend(Chain.prototype, {
 	 */
 	exception_handler : function(env) {
 		// This already includes env, so don't re-include it when forwarding arguments
-		var params = Array.prototype.slice.call(arguments);
+		var params = slice.call(arguments);
 
 		if (this.exception) {
 			env._fm.$push_call(helpers.fname(this.exception));
@@ -145,7 +151,7 @@ _.extend(Chain.prototype, {
 		// calling the real handler
 		var real_after = after;
 		after = function __after_glue() {
-			var params = Array.prototype.slice.call(arguments);
+			var params = slice.call(arguments);
 
 			if (!helpers.hide_function(after_name))
 				env._fm.$push_call(after_name);
@@ -159,7 +165,7 @@ _.extend(Chain.prototype, {
 		var cb = this.fns.reduceRight(function(memo, v) {
 			return function __chain_inner() {
 				// Create parameters array for the function we're calling
-				var params = that.handle_args(env, v, Array.prototype.slice.call(arguments));
+				var params = that.handle_args(env, v, slice.call(arguments));
 				params.unshift(env, memo);
 
 				// I thought about making this up to the end user to call in his functions, but in the
@@ -167,7 +173,7 @@ _.extend(Chain.prototype, {
 				// even if they're fully synchronous functions that were chained together.
 				// Doing this for every single function in the chain slows us down *significantly* so
 				// it might be worthwhile to investigate not using nextTick every time
-				process.nextTick(function() {
+				nextTick(function() {
 					// Catch exceptions inside the application and pass them to env.$throw instead
 					try {
 						env._fm.$push_call(helpers.fname(v, v.fn.name));
@@ -182,7 +188,7 @@ _.extend(Chain.prototype, {
 
 		// Invoke chain, passing forward arguments received
 		env._fm.$push_ctx(this.name);
-		cb.apply(null, args.splice(2));
+		cb.apply(null, args.slice(2));
 	},
 
 	/**
@@ -220,7 +226,7 @@ _.extend(Chain.prototype, {
 	 * @param ... varargs that will be forwarded along to the chain
 	 */
 	call : function(ctx, env, after) {
-		this.apply(ctx, [env, after].concat(Array.prototype.slice.call(arguments, 3)));
+		this.apply(ctx, [env, after].concat(slice.call(arguments, 3)));
 	},
 
 	/**

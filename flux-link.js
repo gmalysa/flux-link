@@ -11,8 +11,10 @@
  */
 
 var _ = require('underscore');
-var Environment = require('./environment');
+var env = require('./environment');
 var helpers = require('./helpers');
+var Environment = env.Environment;
+var LocalEnvironment = env.LocalEnvironment;
 
 var slice = Array.prototype.slice;
 var nextTick = process.nextTick;
@@ -57,8 +59,7 @@ function Chain(fns) {
 	this.bind_after_env = false;
 	this.name = '(anonymous chain)';
 
-	// In newer versions of nodejs:
-	//this.defineProperty(this, 'length', {get : function() { return this.fns[0].params; }});
+	// To simplify making the length (which indicates argument count) reflect what the first function needs
 	this.__defineGetter__('length', function() {
 		if (that.fns[0])
 			return that.fns[0].params;
@@ -136,43 +137,64 @@ _.extend(Chain.prototype, {
 	apply : function(ctx, args) {
 		var env = args[0];
 		var after = args[1] || _.identity;
-		var that = this;
-		var after_name = helpers.fname(after, '(lambda function)');
-
-		// If after() is not already bound to env, we need to pass it along
-		if (this.bind_after_env) {
-			after = after.bind(null, env);
-		}
 
 		// Each chain adds an exception handler to update context information, it'll call the user handler
 		env._fm.$push_exception_handler(this.exception_handler.bind(this), after);
 
-		// Create a wrapper for after to always undo the exception handler and update context info before
-		// calling the real handler
-		var real_after = after;
-		after = function __after_glue() {
+		// Set up our context-wrapping after and then create the serial chain
+		after = this.make_after_glue(env, after);
+		var cb = this.make_serial_chain(this.fns, env, after);
+
+		// Invoke chain, passing forward arguments received
+		env._fm.$push_ctx(this.name);
+		cb.apply(null, args.slice(2));
+	},
+
+	/**
+	 * Helper function to wrap the after() callback given with one that will update our tracking,
+	 * update the exception stack, and then eventually forward control properly
+	 * @param env The environment to use for after
+	 * @param after The after paramer that is to be wrapped appropriately
+	 * @return New after method with state updates
+	 */
+	make_after_glue : function(env, after) {
+		var that = this;
+		var after_name = helpers.fname(after, '(lambda function)');
+
+		return function __after_glue() {
 			var params = slice.call(arguments);
+
+			if (that.bind_after_env)
+				params.unshift(env);
 
 			if (!helpers.hide_function(after_name))
 				env._fm.$push_call(after_name);
 
 			env._fm.$pop_ctx();
 			env._fm.$pop_exception_handler();
-			real_after.apply(null, params);
+			after.apply(null, params);
 		};
+	},
 
-		// Create callback chain
-		var cb = this.fns.reduceRight(function(memo, v) {
+	/**
+	 * Helper that builds a serial callback chain out of an array of functions, including a given
+	 * environment and after pointer
+	 * @param fns Array of functions to convert into a serial chain
+	 * @param env The environment to bind to the chain
+	 * @param after The function to call after the chain terminates
+	 * @return Callback that should be invoked to begin the serial chain
+	 */
+	make_serial_chain : function(fns, env, after) {
+		var that = this;
+		return fns.reduceRight(function(memo, v) {
 			return function __chain_inner() {
 				// Create parameters array for the function we're calling
 				var params = that.handle_args(env, v, slice.call(arguments));
 				params.unshift(env, memo);
 
-				// I thought about making this up to the end user to call in his functions, but in the
-				// end I don't think we lose anything by simply always pushing these to the next tick,
-				// even if they're fully synchronous functions that were chained together.
-				// Doing this for every single function in the chain slows us down *significantly* so
-				// it might be worthwhile to investigate not using nextTick every time
+				// Once 10.x is "common enough"--perhaps around the time of 0.12.0 or so, remove this
+				// closure, force the use of setImmediate, and pass in env, params, and v as arguments
+				// to avoid generating anonymous functions for each callback in the chain
 				nextTick(function() {
 					// Catch exceptions inside the application and pass them to env.$throw instead
 					try {
@@ -185,10 +207,6 @@ _.extend(Chain.prototype, {
 				});
 			};
 		}, after);
-
-		// Invoke chain, passing forward arguments received
-		env._fm.$push_ctx(this.name);
-		cb.apply(null, args.slice(2));
 	},
 
 	/**
@@ -199,7 +217,7 @@ _.extend(Chain.prototype, {
 	 * @param args The arguments array passed to the outer function
 	 * @return Array arguments that should be passed to the actual function being called
 	 */
-	handle_args : function (env, info, args) {
+	handle_args : function(env, info, args) {
 		var missing = info.params - args.length;
 
 		// Get missing args from the stack
@@ -245,7 +263,7 @@ _.extend(Chain.prototype, {
 	remove : function(pos) {
 		this.fns.splice(pos, 1);
 	},
-
+ 
 	/**
 	 * Adds a function to the end of this chain.
 	 * @param fn The function to push. Should be produced by mkfn(), but we'll wrap it if not
@@ -275,10 +293,78 @@ _.extend(Chain.prototype, {
 	shift : function() {
 		this.fns.shift();
 	}
+});
 
+/**
+ * A Loop Chain will iterate over its functions until the condition function specified returns
+ * false, standardizing and simplifying the implementation for something that could already be
+ * done with standard serial Chains.
+ * @param cond Conditional function that is evaluated with an environment and an after
+ * @param fns/varargs Functions to use for the body of the chain
+ */
+function LoopChain(cond, fns) {
+	if (_.isArray(fns))
+		Chain.apply(this, fns);
+	else
+		Chain.apply(this, slice.call(arguments, 1));
+	
+	this.cond = cond;
+	this.name = '(anonymous loop chain)';
+}
+LoopChain.prototype = new Chain();
+LoopChain.prototype.constructor = LoopChain;
+
+_.extend(LoopChain.prototype, {
+	/**
+	 * Allow people to set the condition function later, because why not?
+	 * @param cond Callback to be used as the condition function
+	 */
+	set_cond : function(cond) {
+		this.cond = cond;
+	},
+
+	/**
+	 * Really, the only thing that needs to change is that we modify the apply() method, so that it tests
+	 * the condition before executing the loop and after. Arguments are not forwarded, so do not supply
+	 * any extra arguments.
+	 * @param ctx required for apply() compatibility, ignored
+	 * @param args The rest of the arguments. The first two parameters should be env and after as usual
+	 */
+	apply : function(ctx, args) {
+		var env = args[0];
+		var after = args[1] || _.identity;
+		var that = this;
+		var check, cb;
+	
+		// Push exception handler wrapper with bare after call
+		env._fm.$push_exception_handler(this.exception_handler.bind(this), after);
+	
+		// Update after to remove our context when there is no exception
+		after = this.make_after_glue(env, after);
+	
+		// Check if the loop condition is true with some nested closures to provide uniform continuation
+		// passing implementation.
+		check = function() {
+			env._fm.$push_call(helpers.fname(that.cond, '(lambda condition)'));
+			that.cond.call(null, env, function(result) {
+				if (result)
+					cb.apply(null, []);
+				else
+					nextTick(after);
+			});
+		};
+
+		// Build loop body
+		cb = this.make_serial_chain(this.fns, env, check);
+
+		// The structure is while(cond) { body(); }, so start with a condition check
+		env._fm.$push_ctx(this.name);
+		check();
+	}
 });
 
 // Export library interface-type functions
 module.exports.Chain = Chain;
+module.exports.LoopChain = LoopChain;
 module.exports.Environment = Environment;
 module.exports.mkfn = mkfn;

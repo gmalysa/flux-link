@@ -1,6 +1,8 @@
 /**
  * Definition for the environment class, which is used to track and store the shared
- * state during program execution
+ * state during program execution. Also includes the LocalEnvironment class, which
+ * is used within async/parallel code to provide an equivalent of thread-local
+ * storage
  *
  * (c) 2013, Greg Malysa <gmalysa@stanford.edu>
  * Permission to use granted under the terms of the MIT License. See LICENSE for details.
@@ -166,5 +168,19 @@ _.extend(Environment.prototype, {
 
 });
 
+/**
+ * The LocalEnvironment class, which is the same as an environment class, except that it is
+ * unique to each "thread" in parallel execution chains, similar to thread-local storage.
+ * It has a pointer to the shared state, so that it may still be accessed.
+ * @param env The environment variable to use as parent
+ */
+function LocalEnvironment(env) {
+	Environment.call(this, {}, env._fm.$log);
+	this._env = env;
+}
+LocalEnvironment.prototype = new Environment();
+LocalEnvironment.prototype.constructor = LocalEnvironment;
+
 // Replace the exports object with the new class, because it is all we want to share
-module.exports = Environment;
+module.exports.Environment = Environment;
+module.exports.LocalEnvironment = LocalEnvironment;

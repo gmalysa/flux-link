@@ -1,4 +1,4 @@
-var fl = require('../flux-link');
+var fl = require('../lib-cov/flux-link');
 
 exports = {};
 

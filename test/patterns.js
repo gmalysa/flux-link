@@ -30,13 +30,25 @@ exports['filter'] = function(test) {
 
 	var chain = new fl.Chain(fl.p.filter(filt),
 		function(env, after, filter_result) {
-			test.equal(_.difference(filter_result, result).length, 0);
+			test.equal(_.difference(result, filter_result).length, 0);
 			after();
 		});
 
 	var env = new fl.Environment();
 	test.expect(1);
 	chain.call(null, env, test.done, input);
+};
+
+exports['each'] = function(test) {
+	var input = [1, 2, 3, 4];
+	var each = function(env, after, v, k, list) {
+		test.equals(v, input[k]);
+		after();
+	};
+
+	var env = new fl.Environment();
+	test.expect(4);
+	fl.p.each(each)(env, test.done, input);
 };
 
 module.exports = exports;

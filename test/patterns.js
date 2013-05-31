@@ -51,4 +51,38 @@ exports['each'] = function(test) {
 	fl.p.each(each)(env, test.done, input);
 };
 
+exports['reduce'] = function(test) {
+	var input = [1, 2, 3, 4];
+	var r = function(env, after, memo, v, k, list) {
+		after(memo + v);
+	};
+
+	var chain = new fl.Chain(fl.p.reduce(r),
+		function(env, after, result) {
+			test.equals(result, 10);
+			after();
+		});
+
+	var env = new fl.Environment();
+	test.expect(1);
+	chain.call(null, env, test.done, input, 0);
+};
+
+exports['reduceRight'] = function(test) {
+	var input = ['a', 'b', 'c', 'd'];
+	var r = function(env, after, memo, v, k, list) {
+		after(memo+v);
+	};
+
+	var chain = new fl.Chain(fl.p.reduceRight(r),
+		function(env, after, result) {
+			test.equals(result, 'dcba');
+			after();
+		});
+	
+	var env = new fl.Environment();
+	test.expect(1);
+	chain.call(null, env, test.done, input, '');
+};
+
 module.exports = exports;

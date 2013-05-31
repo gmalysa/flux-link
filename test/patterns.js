@@ -1,4 +1,5 @@
 var fl = require('../lib-cov/flux-link');
+var _ = require('underscore');
 
 exports = {};
 
@@ -12,6 +13,24 @@ exports['map'] = function(test) {
 	var chain = new fl.Chain(fl.p.map(sq),
 		function(env, after, map_result) {
 			test.deepEqual(result, map_result);
+			after();
+		});
+
+	var env = new fl.Environment();
+	test.expect(1);
+	chain.call(null, env, test.done, input);
+};
+
+exports['filter'] = function(test) {
+	var input = [1, 2, 3, 4];
+	var result = [2, 4];
+	var filt = function(env, after, v, k, list) {
+		after(v % 2 == 0);
+	};
+
+	var chain = new fl.Chain(fl.p.filter(filt),
+		function(env, after, filter_result) {
+			test.equal(_.difference(filter_result, result).length, 0);
 			after();
 		});
 

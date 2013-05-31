@@ -1,8 +1,8 @@
 {
   "name"          : "flux-link",
-  "version"       : "0.2.2",
+  "version"       : "0.3.0",
   "description"   : "Callback chaining library to improve control flow in async-heavy programs.",
-  "keywords"      : ["control", "flow", "callback", "chain"],
+  "keywords"      : ["control", "flow", "callback", "chain", "async", "callgraph"],
   "author"        : "Greg Malysa <gmalysa@stanford.edu>",
   "repository"    : { "type" : "git", "url" : "https://github.com/gmalysa/flux-link.git" },
   "licenses"      : ["MIT"],

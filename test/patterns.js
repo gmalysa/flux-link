@@ -1,5 +1,4 @@
 var fl = require('../lib-cov/flux-link');
-var p = require('../lib-cov/patterns');
 
 exports = {};
 
@@ -10,7 +9,7 @@ exports['map'] = function(test) {
 		after(v*v);
 	};
 	
-	var chain = new fl.Chain(p.map(sq),
+	var chain = new fl.Chain(fl.p.map(sq),
 		function(env, after, map_result) {
 			test.deepEqual(result, map_result);
 			after();

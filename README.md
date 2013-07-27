@@ -1,7 +1,7 @@
 flux-link
 =========
 
-A control flow management library for Node.js, designed to help manage program flow in callback-heavy situations.
+A control flow management library for Node.js, designed to help manage program flow in callback-heavy situations. This is not an implementation of promises, and it has a very different theoretical approach to the problem.
 
 ## Installation
 
@@ -133,7 +133,7 @@ will produce
 [1, 4, 9]
 ```
 
-When embedding a pattern in a chain, it takes two arguments: the function to be used to fulfill the pattern (i.e. the function that does the mapping, filtering, etc on a per-element basis), and an optional thisarg for that function, defaulting to null. When the chain evaluates the pattern during execution, it will call the provided function. Efforts have been made to match the ES5 specifications for the function signatures for each, map, filter, reduce, and reduceRight, with the exception that two additional parameters are provided **before** the other arguments, the familiar env and after arguments.
+When embedding a pattern in a chain, it takes two arguments: the function to be used to fulfill the pattern (i.e. the function that does the mapping, filtering, etc on a per-element basis), and an optional thisarg for that function, defaulting to null. When the chain evaluates the pattern during execution, it will call the provided function. Efforts have been made to match the ES5 specifications for the function signatures for each, map, filter, reduce, and reduceRight, with the exception that two additional parameters are provided **before** the other arguments, the familiar env and after arguments. Additionally, by default, map, filter, and each are implemented as a parallel evaluation. If you need or would like a serial version, there is smap, seach, and sfilter, which are identical, except that they complete processing for each element before starting the next one.
 
 Be careful: all callbacks used for patterns must have a signature that accepts the correct total number of parameters. That is, functions used with map must accept env, after, value, key, index, and list, even if they are not used by the function. This is due to limitations in the automatic argument supplementation which does not handle optional arguments (yet). If you do not accept all of the required arguments for a function, then they will be pushed to the stack, which is not strictly negative but is likely undesirable.
 

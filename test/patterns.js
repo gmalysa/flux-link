@@ -69,6 +69,18 @@ exports['each'] = function(test) {
 	fl.p.each(each)(env, test.done, input);
 };
 
+exports['seach'] = function(test) {
+	var input = [1, 2, 3, 4];
+	var each = function(env, after, v, k, list) {
+		test.equals(v, input[k]);
+		after();
+	};
+
+	var env = new fl.Environment();
+	test.expect(4);
+	fl.p.seach(each)(env, test.done, input);
+};
+
 exports['reduce'] = function(test) {
 	var input = [1, 2, 3, 4];
 	var r = function(env, after, memo, v, k, list) {

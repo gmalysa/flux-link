@@ -139,4 +139,42 @@ exports['parallel'] = function(test) {
 	chain.call(null, env, test.done);
 }
 
+exports['branch true'] = function(test) {
+	var chain = new fl.Branch(
+		function check(env, after, input) {
+			after(input > 5);
+		},
+		function true_branch(env, after) {
+			test.ok(true);
+			after();
+		},
+		function false_branch(env, after) {
+			test.ok(false);
+			after();
+		});
+	
+	test.expect(1);
+	var env = new fl.Environment();
+	chain.call(null, env, test.done, 10);
+};
+
+exports['branch false'] = function(test) {
+	var chain = new fl.Branch(
+		function check(env, after, input) {
+			after(input > 5);
+		},
+		function true_branch(env, after) {
+			test.ok(false);
+			after();
+		},
+		function false_branch(env, after) {
+			test.ok(true);
+			after();
+		});
+	
+	test.expect(1);
+	var env = new fl.Environment();
+	chain.call(null, env, test.done, 1);
+};
+
 module.exports = exports;

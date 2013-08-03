@@ -52,7 +52,7 @@ Chains have the same function interface as the functions that are used to build 
     var chain2 = new fl.Chain(chain, chain, chain);
 ```
 
-Two other types of chains also exist. The first is the LoopChain, which is used to create chains whose bodies will be executed as many times as a condition function evaluates to true, structurally similar to an asynchronous while loop. The condition and the body can both be functions or chains, accepting the environment and after as their first parameters. Additional parameters can be specified used appropriately. When the loop chain is called, excess parameters will be passed to the condition function, and excess parameters produced by the condition function will be passed to the loop body. Note: The loop body's final statement **must** produce new parameters for the condition, if arguments are used. Passing arguments through loops is considered an advanced feature; you should use environment-local variables instead for simplicity.
+Three other types of chains also exist. The first is the LoopChain, which is used to create chains whose bodies will be executed as many times as a condition function evaluates to true, structurally similar to an asynchronous while loop. The condition and the body can both be functions or chains, accepting the environment and after as their first parameters. Additional parameters can be specified used appropriately. When the loop chain is called, excess parameters will be passed to the condition function, and excess parameters produced by the condition function will be passed to the loop body. Note: The loop body's final statement **must** produce new parameters for the condition, if arguments are used. Passing arguments through loops is considered an advanced feature; you should use environment-local variables instead for simplicity.
 
 ```javascript
     var lc = new fl.LoopChain(
@@ -67,7 +67,7 @@ Two other types of chains also exist. The first is the LoopChain, which is used 
 
 Will print out each element of env.stuff, assuming that env.inx was properly initialized beforehand. _TBD:_ It seems reasonable to add an initializer function that is called before the first call to the condition function, increasing the flexibility of the LoopChain and removing the need for an additional wrapper. This may be changed in a future patch to introduce this behavior.
 
-Finally, a ParallelChain also exists, which executes all of its functions in parallel.  It passes a special environment pointer to its members: it is private to each parallel "thread," with an embedded pointer `_env` that references the "global" execution environment. Each thread-local environment also has `lenv._thread_id`, a numerical identifier that is assigned when the environment is created. It is guaranteed to be unique and counts up from 1 to the total number of parallel elements in the chain. The parallel chain does not actually use threads; the functions execute in the single node.js execution environment, but it is convenient to refer to them as separate threads as they are intended to be superficially similar.
+Next, a ParallelChain also exists, which executes all of its functions in parallel.  It passes a special environment pointer to its members: it is private to each parallel "thread," with an embedded pointer `_env` that references the "global" execution environment. Each thread-local environment also has `lenv._thread_id`, a numerical identifier that is assigned when the environment is created. It is guaranteed to be unique and counts up from 1 to the total number of parallel elements in the chain. The parallel chain does not actually use threads; the functions execute in the single node.js execution environment, but it is convenient to refer to them as separate threads as they are intended to be superficially similar.
 
 If any of the functions in the parallel chain produce results (by passing arguments to after()), then an array is created and all of the produced results are stored, indexed by the thread id that produced them. This result array is then passed to the next function after the parallel chain.
 
@@ -78,6 +78,24 @@ If any of the functions in the parallel chain produce results (by passing argume
 ```
 
 produces ```1 2 3```. The order of execution in a parallel chain is not specified or guaranteed, but in practice they are at least initially called in order.
+
+Finally, a Branch also exists (I've dropped the -Chain suffix here because it seems awkward as it reflects a fork more than a chain, physically), which allows you to specify asynchronous decision points with easy encapsulation for entire execution paths (i.e. if the user is logged in, run this chain to add account info to the page, otherwise run another chain to add a registration link, then, in either case, continue on with the main execution path). This isn't strictly necessary for use, but I found that it came up as a common pattern, and introducing the Branch class reduces the amount of glue necessary to implement it.
+
+Branches are really simple. If the asynchronous condition/test function produces true, then the first alternative is executed, and then control flow is passed to the Chain-level after. If it instead produces false, then the second alternative is executed, and then control flow is passed to the Chain-level after, again. Example code for the situation described above:
+
+```javascript
+    var register = new fl.Chain(); // Chain to display registration info
+    var loggedIn = new fl.Chain(); // Chain to display account info
+    var branch = new fl.Branch(
+        function(env, after) {
+            // Assuming user.isLoggedIn is a synchronous function that checks a status flag on the given object and returns true or false, which we pass forward asynchronously
+            after(user.isLoggedIn(env.user));
+        },
+        loggedIn,
+        register);
+
+    // ... Add the branch to the normal page processing flow and call it as usual
+````
 
 ## Function Arguments and the Stack
 One important aspect of flux-link is that an internal pseudo-stack is maintained, which can be used for passing arguments to functions. This is used to augment the normal function passing semantics that are also available. For example,
@@ -165,14 +183,35 @@ env.$format_call_tree(trace);
 
 Additionally, whenever an exception is passed to env.$throw(), a back trace will be generated, parsed as a stack trace, and added as err.backtrace, to mimic the behavior of the existing err.stack property.
 
+## DOT Graph Export
+
+Finally, you may generate a representation of the entire control flow graph defined using a series of flux-link chains in the DOT language. Then, using the GraphViz package, you can convert this into a nice picture that captures the control flow of your program at the source level, to aid in debugging, or simply to have made into a poster for your office wall after the product launches.
+
+Simply add one call to ```fl.gen_dot``` with the chain whose graph representation you wish to generate as its argument, somewhere in your code. The resulting string can then be saved or passed to dot to produce an actual graph. The process is very fast, so you could simply add this to the startup code for your server to make sure that your source graph is always in sync with the version of code running.
+
+```javascript
+var chain = new fl.Chain();
+// ... Fill in the chain here ...
+console.log(fl.gen_dot(chain));
+```
+
+```
+$ node server > graph.dot
+$ dot -Tpng -O graph.dot
+```
+
+Of course, this requires that GraphViz (and as a result dot) are installed on your system.
+
 ## API Listing
 ```javascript
 // Global functions
 fl.Chain(function [, function [, ...]])
 fl.LoopChain(condition function, function [, function [, ...]])
 fl.ParallelChain(function [, function [, ...]))
+fl.Branch(condition function, if_true function, if_false function)
 fl.Environment(initial_properties, log_function)
 fl.mkfn(function, arg_count [, name [, context]])
+fl.gen_dot(chain)
 
 // Chain methods
 Chain.call(ctx, env, after [, args ...])
@@ -202,10 +241,13 @@ Environment.$format_stack_trace()
 
 // Helpers/patterns
 fl.p.map(function, ctx)
+fl.p.smap(function, ctx)
 fl.p.filter(function, ctx)
+fl.p.sfilter(function, ctx)
 fl.p.reduce(function, ctx)
 fl.p.reduceRight(function, ctx)
 fl.p.each(function, ctx)
+fl.p.seach(function, ctx)
 ```
 
 

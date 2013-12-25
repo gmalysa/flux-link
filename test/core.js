@@ -101,6 +101,18 @@ exports['chained stack parameters'] = function(test) {
 	chain.call(null, env, test.done);
 }
 
+exports['caller initial parameters'] = function(test) {
+	var chain = new fl.Chain(
+		function(env, after, param) {
+			test.equals(param, 10);
+			after();
+		});
+	
+	var env = new fl.Environment();
+	test.expect(1);
+	chain.call(null, env, test.done, 10);
+}
+
 exports['loop'] = function(test) {
 	var chain = new fl.LoopChain(
 		function(env, after) {
@@ -136,6 +148,25 @@ exports['parallel'] = function(test) {
 	
 	var env = new fl.Environment({count : 5});
 	test.expect(6);
+	chain.call(null, env, test.done);
+}
+
+exports['parallel results array'] = function(test) {
+	var sq = function sq(lenv, after) {
+		after(lenv._thread_id * lenv._thread_id);
+	}
+
+	var pc = new fl.ParallelChain(sq, sq, sq);
+	var chain = new fl.Chain(pc,
+		function(env, after, results) {
+			test.equals(results[0], 0);
+			test.equals(results[1], 1);
+			test.equals(results[2], 4);
+			after();
+		});
+
+	var env = new fl.Environment();
+	test.expect(3);
 	chain.call(null, env, test.done);
 }
 

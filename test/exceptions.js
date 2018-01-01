@@ -29,6 +29,44 @@ exports['exception chaining if unhandled'] = function(test) {
 	oc.call(null, env, function() { test.ok(true); test.done(); });
 }
 
+exports['exception error argument'] = function(test) {
+	var err = {};
+	var chain = new fl.Chain(
+		function(env, after) {
+			err = new Error('Test error');
+			env.$throw(err);
+		});
+	
+	chain.set_exception_handler(function(env, recErr) {
+		test.ok(Object.is(err, recErr));
+		env.$catch();
+	});
+
+	var env = new fl.Environment();
+	chain.call(null, env, test.done);
+}
+
+exports['exception nesting arguments'] = function(test) {
+	var err = {};
+	var chain = new fl.Chain(
+		new fl.Chain(
+			function(env, after) {
+				err = new Error('Test error');
+				env.$throw(err);
+			}
+		)
+	);
+	
+	chain.set_exception_handler(function(env, recErr) {
+		console.log(recErr);
+		test.ok(Object.is(err, recErr));
+		env.$catch();
+	});
+
+	var env = new fl.Environment();
+	chain.call(null, env, test.done);
+}
+
 exports['bind_after_env applies in exception'] = function(test) {
 	var chain = new fl.Chain(
 		function(env, after) {

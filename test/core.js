@@ -208,4 +208,29 @@ exports['branch false'] = function(test) {
 	chain.call(null, env, test.done, 1);
 };
 
+exports['local env'] = function(test) {
+	var inner = new fl.Chain(
+		function(env, after) {
+			test.ok(env.x === undefined);
+			env.x = 1;
+			after();
+		}
+	);
+	inner.use_local_env(true);
+
+	var chain = new fl.Chain(
+		inner,
+		inner,
+		function(env, after) {
+			test.ok(env.x === undefined);
+			after();
+		}
+	);
+
+	test.expect(3);
+
+	var env = new fl.Environment();
+	chain.call(null, env, test.done);
+}
+
 module.exports = exports;

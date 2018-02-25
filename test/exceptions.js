@@ -58,7 +58,6 @@ exports['exception nesting arguments'] = function(test) {
 	);
 	
 	chain.set_exception_handler(function(env, recErr) {
-		console.log(recErr);
 		test.ok(Object.is(err, recErr));
 		env.$catch();
 	});

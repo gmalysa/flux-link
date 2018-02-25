@@ -233,4 +233,26 @@ exports['local env'] = function(test) {
 	chain.call(null, env, test.done);
 }
 
+exports['local env passthru'] = function(test) {
+	var inner = new fl.Chain(
+		function(env, after) {
+			test.ok(env.x == 1);
+			after();
+		}
+	);
+
+	var chain = new fl.Chain(
+		function(env, after) {
+			env.x = 1;
+			after();
+		},
+		inner
+	);
+
+	test.expect(1);
+
+	var env = new fl.Environment();
+	chain.call(null, env, test.done);
+}
+
 module.exports = exports;
